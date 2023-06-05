@@ -488,7 +488,7 @@ public class ReplicationControlManager {
 
         if (record.removingReplicas() != null || record.addingReplicas() != null) {
             log.info("Replayed partition assignment change {} for topic {}", record, topicInfo.name);
-        } else if (log.isDebugEnabled()) {
+        } else {
             log.debug("Replayed partition change {} for topic {}", record, topicInfo.name);
         }
     }

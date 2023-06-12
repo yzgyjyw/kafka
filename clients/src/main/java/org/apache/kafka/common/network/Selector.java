@@ -292,6 +292,7 @@ public class Selector implements Selectable {
             pollSelectionKeys(immediatelyConnectedKeys, true, endSelect);
         }
 
+        // 遍历stagedReceives中的NetWorkReceive,每一个kafkaChannel中值拿一个NetWorkReceive
         addToCompletedReceives();
 
         long endIo = time.nanoseconds();
@@ -340,6 +341,8 @@ public class Selector implements Selectable {
                 /* if channel is ready read from any connections that have readable data */
                 if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
                     NetworkReceive networkReceive;
+                    // 从socketChannel中获取消息.消息被封装为NetWorkReceive对象
+                    // StagedReceives为一个Map结构 kafkaChannel-->Queue<NetWorkReceive>
                     while ((networkReceive = channel.read()) != null)
                         addToStagedReceives(channel, networkReceive);
                 }
@@ -347,7 +350,9 @@ public class Selector implements Selectable {
                 /* if channel is ready write to any sockets that have space in their buffer and for which we have data */
                 if (channel.ready() && key.isWritable()) {
                     Send send = channel.write();
+                    // send!=null 说明消息成功写到socketChannel
                     if (send != null) {
+                        // 将成功发送的消息写入completedSends,completedSends为一个List结构
                         this.completedSends.add(send);
                         this.sensors.recordBytesSent(channel.id(), send.size());
                     }

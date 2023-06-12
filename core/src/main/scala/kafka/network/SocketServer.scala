@@ -51,17 +51,24 @@ import scala.util.control.{ControlThrowable, NonFatal}
  */
 class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time) extends Logging with KafkaMetricsGroup {
 
+  // 从config中获取监听的协议、地址和端口号
   private val endpoints = config.listeners
+  // 处理网络请求的线程数 默认值3
   private val numProcessorThreads = config.numNetworkThreads
+  // 默认值500
   private val maxQueuedRequests = config.queuedMaxRequests
+
+  // 通常endpoints.size=1
   private val totalProcessorThreads = numProcessorThreads * endpoints.size
 
+  // 每个客户端ip允许建立的连接数 默认不限制
   private val maxConnectionsPerIp = config.maxConnectionsPerIp
   private val maxConnectionsPerIpOverrides = config.maxConnectionsPerIpOverrides
 
   this.logIdent = "[Socket Server on Broker " + config.brokerId + "], "
 
   val requestChannel = new RequestChannel(totalProcessorThreads, maxQueuedRequests)
+  // processors的默认长度为3
   private val processors = new Array[Processor](totalProcessorThreads)
 
   private[network] val acceptors = mutable.Map[EndPoint, Acceptor]()
@@ -86,13 +93,17 @@ class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time
       val brokerId = config.brokerId
 
       var processorBeginIndex = 0
+      // endpoints的长度通常为1
       endpoints.values.foreach { endpoint =>
         val protocol = endpoint.protocolType
         val processorEndIndex = processorBeginIndex + numProcessorThreads
 
-        for (i <- processorBeginIndex until processorEndIndex)
+        for (i <- processorBeginIndex until processorEndIndex) {
+          // 每一个processor就是一个selector,用于监听客户端的读写事件,相当于从reactor
           processors(i) = newProcessor(i, connectionQuotas, protocol)
+        }
 
+        // 服务器端用来监听客户端连接的acceptor
         val acceptor = new Acceptor(endpoint, sendBufferSize, recvBufferSize, brokerId,
           processors.slice(processorBeginIndex, processorEndIndex), connectionQuotas)
         acceptors.put(endpoint, acceptor)
@@ -140,6 +151,7 @@ class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time
   protected[network] def newProcessor(id: Int, connectionQuotas: ConnectionQuotas, protocol: SecurityProtocol): Processor = {
     new Processor(id,
       time,
+      // 一次请求的内容的最大值
       config.socketRequestMaxBytes,
       requestChannel,
       connectionQuotas,
@@ -261,6 +273,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
           if (ready > 0) {
             val keys = nioSelector.selectedKeys()
             val iter = keys.iterator()
+            // 当有客户端与server端建立连接时,轮流将当前建立的连接交给对应的processor处理(典型的多reactor多线程)
             while (iter.hasNext && isRunning) {
               try {
                 val key = iter.next
@@ -382,6 +395,7 @@ private[kafka] class Processor(val id: Int,
     override def toString: String = s"$localHost:$localPort-$remoteHost:$remotePort"
   }
 
+  // 新创建的连接,当acceptor调用accept方法获取到客户端SocketChannel时,就会存放在Processor的newConnections队列中,后续该客户端的读写事件由当前processor负责
   private val newConnections = new ConcurrentLinkedQueue[SocketChannel]()
   private val inflightResponses = mutable.Map[String, RequestChannel.Response]()
   private val metricTags = Map("networkProcessor" -> id.toString).asJava
@@ -410,9 +424,11 @@ private[kafka] class Processor(val id: Int,
     while (isRunning) {
       try {
         // setup any new connections that have been queued up
+        // 处理新建的连接,accept监听到建立连接时会将socketChannel放在队列中
         configureNewConnections()
         // register any new responses for writing
         processNewResponses()
+        // selector.poll()
         poll()
         processCompletedReceives()
         processCompletedSends()
@@ -434,16 +450,20 @@ private[kafka] class Processor(val id: Int,
   }
 
   private def processNewResponses() {
+    // 从requestChannel中获取当前processor对应的相应队列
     var curr = requestChannel.receiveResponse(id)
     while (curr != null) {
       try {
+        // 不需要对client端响应
         curr.responseAction match {
           case RequestChannel.NoOpAction =>
             // There is no response to send to the client, we need to read more pipelined requests
             // that are sitting in the server's socket buffer
             curr.request.updateRequestMetrics
             trace("Socket server received empty response to send, registering for read: " + curr)
+            // 直接开始监听连接上的Read事件
             selector.unmute(curr.request.connectionId)
+          // 需要对client响应
           case RequestChannel.SendAction =>
             sendResponse(curr)
           case RequestChannel.CloseConnectionAction =>
@@ -460,6 +480,7 @@ private[kafka] class Processor(val id: Int,
   /* `protected` for test usage */
   protected[network] def sendResponse(response: RequestChannel.Response) {
     trace(s"Socket server received response to send, registering for write and sending data: $response")
+    // 依据destionation找到对应的连接
     val channel = selector.channel(response.responseSend.destination)
     // `channel` can be null if the selector closed the connection because it was idle for too long
     if (channel == null) {
@@ -467,7 +488,9 @@ private[kafka] class Processor(val id: Int,
       response.request.updateRequestMetrics()
     }
     else {
+      // 将要发送的数据绑定到kafkaChannel中并开始监听write事件
       selector.send(response.responseSend)
+      // 记录当前连接上的最近一次响应的内容
       inflightResponses += (response.request.connectionId -> response)
     }
   }
@@ -489,8 +512,11 @@ private[kafka] class Processor(val id: Int,
         val channel = selector.channel(receive.source)
         val session = RequestChannel.Session(new KafkaPrincipal(KafkaPrincipal.USER_TYPE, channel.principal.getName),
           channel.socketAddress)
+        // 将NetWorkReceive一句请求头解析成不同的Request对象
         val req = RequestChannel.Request(processor = id, connectionId = receive.source, session = session, buffer = receive.payload, startTimeMs = time.milliseconds, securityProtocol = protocol)
+        // 将解析后的请求放在RequestChannel中的requestQueue中
         requestChannel.sendRequest(req)
+        // 取消监听读事件
         selector.mute(receive.source)
       } catch {
         case e @ (_: InvalidRequestException | _: SchemaException) =>

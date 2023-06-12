@@ -1,5 +1,9 @@
 Apache Kafka
 =================
+0.10.1源码编译注意事项:使用gradle版本为3.0
+详见文章
+https://developer.aliyun.com/article/1172151
+
 See our [web site](http://kafka.apache.org) for details on the project.
 
 You need to have [Gradle](http://www.gradle.org/installation) and [Java](http://www.oracle.com/technetwork/java/javase/downloads/index.html) installed.
